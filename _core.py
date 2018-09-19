@@ -40,6 +40,7 @@ class Simulator(object):
             self._bookTSByAsset[asset] = []
             self.tradeTSByAsset[asset] = []
             self.compositeTSByAsset[asset] = []
+        self._calcCompositeFn = _calcTOBQuotes
 
     def addMM(self, mm):
         self._mms.append(mm)
@@ -57,30 +58,11 @@ class Simulator(object):
         for mm in self.ranSeqMMs():
             self.processOrders(bookByAsset, mm.getOrders(self.tradeTSByAsset, self._bookTSByAsset))
         for asset, ts in self.compositeTSByAsset.items():
-            ts.append(self._calcComposite(bookByAsset[asset]))
+            ts.append(self._calcCompositeFn(bookByAsset[asset]))
         for arber in self.ranSeqArbers():
             self.processOrders(bookByAsset, arber.getOrders(bookByAsset))
         for lt in self.ranSeqLTs():
             self.processOrders(bookByAsset, lt.getOrders(self.tradeTSByAsset, self._bookTSByAsset, bookByAsset))
-
-    def _calcComposite(self, book):
-        bidSize = 0.0
-        bidPrice = 0.0
-        askSize = 0.0
-        askPrice = 0.0
-        bidOrder = askOrder = None
-        for bidOrder in book.buyOrders:
-            bidSize += bidOrder.size
-            bidPrice += bidOrder.size * bidOrder.price
-        bidPrice /= bidSize
-        for askOrder in book.sellOrders:
-            askSize += askOrder.size
-            askPrice += askOrder.size * askOrder.price
-        askPrice /= askSize
-        return (
-            Quote(BUY, bidSize, bidOrder.asset, bidPrice) if bidOrder else None,
-            Quote(SELL, askSize, askOrder.asset, askPrice) if askOrder else None
-        )
 
 
     def processOrders(self, bookByAsset, orders):
@@ -162,6 +144,32 @@ class Simulator(object):
         return list(self._arbers)
 
 
+def _calcTOBQuotes(book):
+    return (
+        Quote(BUY, 0, book.buyOrders[0].asset, book.buyOrders[0].price) if book.buyOrders else None,
+        Quote(SELL, 0, book.buyOrders[0].asset, book.sellOrders[0].price) if book.sellOrders else None
+    )
+
+def _calcWAQuotes( book):
+    bidSize = 0.0
+    bidPrice = 0.0
+    askSize = 0.0
+    askPrice = 0.0
+    bidOrder = askOrder = None
+    for bidOrder in book.buyOrders:
+        bidSize += bidOrder.size
+        bidPrice += bidOrder.size * bidOrder.price
+    bidPrice /= bidSize
+    for askOrder in book.sellOrders:
+        askSize += askOrder.size
+        askPrice += askOrder.size * askOrder.price
+    askPrice /= askSize
+    return (
+        Quote(BUY, bidSize, bidOrder.asset, bidPrice) if bidOrder else None,
+        Quote(SELL, askSize, askOrder.asset, askPrice) if askOrder else None
+    )
+
+
 
 class Book(object):
     def __init__(self):
@@ -169,7 +177,7 @@ class Book(object):
         self.sellOrders = []
 
 
-class _Agent(object):
+class Agent(object):
     def __init__(self , name):
         self.tradesByAsset = {}
         self.name = name
@@ -212,8 +220,6 @@ class _Agent(object):
         else:
             return self._sellValue - (self._buyValue + abs(position) * markPrice)
 
-
-
     def setAsset(self, asset):
         self._asset = asset
         self.tradesByAsset[asset] = []
@@ -224,12 +230,14 @@ class _Agent(object):
         return self.name
 
 
-class MM1(_Agent):
+
+class MM1(Agent):
     # quotes 99@101
     def getOrders(self, tradeTSByAsset, bookTSByAsset):
         return [Order(self, BUY, 1, self._asset, 99), Order(self, SELL, 1, self._asset, 101)]
 
-class MM2(_Agent):
+
+class MM2(Agent):
     # quotes a 2 tick market around the last trade, else starts at 100
     def getOrders(self, tradeTSByAsset, bookTSByAsset):
         ts = tradeTSByAsset[self._asset]
@@ -237,19 +245,7 @@ class MM2(_Agent):
         return [Order(self, BUY, 1, self._asset, mid - 1.0), Order(self, SELL, 1, self._asset, mid + 1.0)]
 
 
-class MM3(_Agent):
-    # quotes a 2 tick market around the last trade, else starts at 100, skewing to close out position
-    def __init__(self, name, size=1):
-        super().__init__(name)
-        self._size = size
-    def getOrders(self, tradeTSByAsset, bookTSByAsset):
-        ts = tradeTSByAsset[self._asset]
-        mid = ts[-1].price if ts else 100.0
-        skew = -0.5 if self.position > 0.0 else (0.0 if self.position == 0.0 else 0.5)
-        return [Order(self, BUY, self._size, self._asset, mid - 1.0 + skew), Order(self, SELL, self._size, self._asset, mid + 1.0 + skew)]
-
-
-class LT1(_Agent):
+class LT1(Agent):
     def getOrders(self, tradeTSByAsset, _bookTSByAsset, bookByAsset):
         isBuy = random.random() <0.5
         if isBuy:
